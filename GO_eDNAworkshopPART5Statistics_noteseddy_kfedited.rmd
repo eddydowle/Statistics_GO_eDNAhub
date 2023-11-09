@@ -1,0 +1,757 @@
+---
+title: "Genetics Otago eDNA workshop - Statistical analysis"
+author: "GJ Jeunen, K Fernandes, E Dowle"
+date: "15 November 2023"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+<style>
+pre {
+  overflow-x: auto;
+}
+pre code {
+  word-wrap: normal;
+  white-space: pre;
+}
+</style>
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+# Introduction
+We'll be running through some basic statistical analysis of the data we have generated - this will be broken up into a few main parts
+
+- Data exploration
+- Alpha Diversity (Species richness)
+  - Species richness
+  - iNEXT (Extrapolation and interpolation)
+- Beta Diversity (Community composition)
+  - Ordination (NMDS/PCoA)
+  - PERMANOVA
+  - Indicator Species Analysis
+- Plotting maps
+
+
+Please note this is not an exhaustive list of the analysis you could do with your data, but some good starting points for which to jump off from. 
+
+
+## Importing data into R
+
+Before we can analyse our data, we need to import and format the files we created during the bioinformatic analysis, as well as the metadata file. We will also need to load in the necessary R libraries.
+
+```{r}
+## LOAD PACKAGES ##
+
+#install.packages('tidyverse', 'viridis', 'indicspecies', 'vegan', 'glue', 'reshape2')
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+#
+##Phyloseq installer
+#The following initializes usage of Bioc devel
+#BiocManager::install(version='devel')
+#BiocManager::install("phyloseq")
+#BiocManager::install("microbiome")
+#iNEXT 3D installer
+#install.packages('devtools')
+library(devtools)
+#install_github('AnneChao/iNEXT.3D')
+
+library('tidyverse')
+library('viridis')
+library('indicspecies') 
+library('vegan')
+library('glue')
+library('reshape2')
+library('phyloseq')
+library('iNEXT.3D') 
+library('ggplot2') 
+library('microbiome')
+
+## FORMAT DATA ##
+
+
+setwd("H:/Otago/Teaching/Genetics_otago")
+#set to yours
+## read in the data and metadata
+df <- read.delim('zotutableFTP142Combined.txt', check.names = FALSE, row.names = 1)
+tax <- read.delim('consensusTaxonomyFormatFTP142Combined.txt', check.names = FALSE, row.names = 1, header = T)
+meta <- read.csv('FTP142SampleMetadata.csv', check.names = FALSE, row.names = 1) 
+
+
+```
+
+## Loading data into Phyloseq
+
+A helpful R package that might be good to help sort, pre-process and visualise your data is `Phyloseq`. It was originally made for microbiome metabarcoding data, but does just as well when using eDNA data. Just keep in mind, because of the nature of eDNA, for a lot of the analysis steps, you will need to use presence-absence transformed data. 
+
+```{r}
+
+#First, we need to make sure that our taxonomy file is set up as a matrix
+tax_mat<-as.matrix(tax)
+
+#Set up files into file structure
+
+otu <- otu_table(df, taxa_are_rows = TRUE) 
+taxa <- tax_table(tax_mat)
+sample <- sample_data(meta)
+
+#Bring all files together into a phyloseq object
+
+FisheDNA<-phyloseq(otu, taxa, sample)
+
+FisheDNA
+
+#Lets explore our data using phyloseq
+sample_names(FisheDNA)[1:5]
+
+rank_names(FisheDNA)
+
+otu_table(FisheDNA)[1:5, 1:5]
+
+tax_table(FisheDNA)[1:5, 1:4]
+
+taxa_names(FisheDNA)[1:10]
+
+
+#Preprocess this data (examples)
+
+
+FisheDNA.1 = subset_taxa(FisheDNA, class=="Actinopteri") #Subset taxa belonging to the class Actinopteri
+
+FisheDNA.2 = prune_samples(sample_sums(FisheDNA)>=20, FisheDNA) #Remove samples with less than 20 total reads. 
+
+FisheDNA.3= filter_taxa(FisheDNA, function(x) sum(x > 3) > (0.2*length(x)), TRUE) #Remove taxa not seen more than 3 times in at least 20% of the samples.
+
+#Standardise abundances to the median sequencing depth
+total = median(sample_sums(FisheDNA))
+standf = function(x, t=total) round(t * (x / sum(x)))
+FisheDNA.4= transform_sample_counts(FisheDNA, standf)
+
+
+FisheDNA   #Original data frame
+FisheDNA.1 #Subsetting taxa to Actinopteri
+FisheDNA.2 #Removing samples with less than 20 reads
+FisheDNA.3 #Remove taxa not seen more than 3 times in at least 20% of the samples. 
+FisheDNA.4 #Standardised abundance
+
+otu_table(FisheDNA.4)[1:5, 1:5]
+
+
+#Okay, now lets preprocess this data for our current analysis
+
+FisheDNA.5 <- filter_taxa(FisheDNA, function(x){sum(x > 0) > 1}, prune=TRUE) #removing singletons
+FisheDNA.5
+
+
+#transform into a presence-absence dataset
+
+Fish.eDNA.pa <- microbiome::transform(FisheDNA.5, 'pa')
+
+#abundance of reads across Sample Number
+p = plot_bar(FisheDNA.5, "SampleNo", fill="species")
+
+p + geom_bar(aes(color=species, fill=species), stat="identity", position="stack") +
+ggtitle("Read abundance across sample number ")  #makes a more aesthetic plot
+
+#abundance of reads across Locations
+p1 = plot_bar(FisheDNA.5, "Location", fill="species")
+
+p1 + geom_bar(aes(color=species, fill=species), stat="identity", position="stack") +
+ggtitle("Read abundance across Locations") 
+
+
+#Lets make some relative abundance plots
+#First step is to transform to relative abundance
+FisheDNA.6 = transform_sample_counts(Fish.eDNA.pa, function(x) x / sum(x) )
+FisheDNA.6 
+
+data_fish <- psmelt(FisheDNA.6)
+relabundance_plot <- ggplot(data=data_fish, aes(x=SampleNo, y=Abundance, fill=species)) + facet_grid(~Location, scales = "free")
+relabundance_plot + geom_bar(aes(), stat="identity", position="fill") 
+
+
+#Lets get these objects out of phyloseq and use them for further analysis
+
+#First, the raw OTU table
+Fish.OTU <- as(otu_table(FisheDNA.5), "matrix")
+Fish_OTU_df = as.data.frame((Fish.OTU))
+Fish_OTU_df= t(Fish_OTU_df)
+
+#now presence-absence
+Fish.pa.OTU <- as(otu_table(Fish.eDNA.pa), "matrix")
+Fish.pa_OTU_df = as.data.frame((Fish.pa.OTU))
+Fish.pa_OTU_df= t(Fish.pa_OTU_df)
+
+Fish_Sample = as(sample_data(Fish.eDNA.pa), "matrix")
+Fish_Sample_df =  as.data.frame(Fish_Sample)
+
+Fish_taxa <- tax_table(Fish.eDNA.pa)
+Fish_taxa_df <- as.data.frame(Fish_taxa)
+
+Fish_PA_OTU_Sample = cbind(Fish_Sample_df, Fish.pa_OTU_df)
+
+
+
+```
+
+
+
+# Preliminary data exploration
+
+One of the first things we would want to look at, is to determine if sufficient sequencing depth was achieved. We can do this by creating rarefaction curves, which work similar to tradtional species accumulation curves, whereby we randomly select sequences from a sample and determine if new species or OTUs are being detected. If the curve flattens out, it gives the indication sufficient sequencing has been conducted to recover most of the diversity in the dataset.
+
+```{r}
+########################
+## RAREFACTION CURVES ##
+########################
+
+## identify the lowers number of reads for samples and generate rarefaction curves
+raremax_df <- min(rowSums(Fish_OTU_df))
+rarecurve(Fish_OTU_df, step = 100, sample = 1, col = 'blue', cex = 0.5)
+
+
+
+```
+
+
+The next step of preliminary data exploration, is to determine what is contained in our data. We can do this by plotting the abundance of each taxon for every sample in a stacked bar plot.
+
+
+# Alpha Diversity (Species richness)
+
+- Alpha Diversity (Species richness)
+  - iNEXT (Interpolation and Extrapolation)
+
+First we are going to look at the overall species richness (number of species) in a sample.
+
+  
+```{r}
+
+######################
+## SPECIES RICHNESS ##
+######################
+## calculate number of taxa detected per sample and group per sampling location 
+
+rich<-estimate_richness(Fish.eDNA.pa, measures=c("Observed"))
+
+rich<-cbind(rich, Fish_Sample)
+
+
+## test assumptions of statistical test, first normal distribution, next homoscedasticity
+histogram(~ Observed | Location, data = rich, layout = c(2,2))
+shapiro.test(rich$Observed)
+bartlett.test(Observed ~ Location, data = rich)
+
+```
+
+So we don't currently meet the assumptions to run a parametric ANOVA. We will need to use a non-parametric test. 
+
+```{r}
+#non-parametric - need to use Kruskal-Wallis test
+kruskal.test(Observed ~ Location, data = rich)
+boxplot(Observed ~ Location, data = rich, ylab = 'Species Richness', xlab = 'Location')
+
+#make a ggplot boxplot
+
+ggplot(rich, aes(x=Location, y=Observed, colour = Location)) +
+  geom_boxplot() +
+  ylab("Observed zotu richness")+
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+
+#pairwise test - lets look at the difference in richness
+pairwise.wilcox.test(rich$Observed, rich$Location,
+                 p.adjust.method = "BH")
+
+
+
+```
+
+Species richness is significantly different between groups, lower in open water location. 
+
+
+## iNEXT
+
+iNEXT (iNterpolation and EXTrapolation) is an R package, available in CRAN and Github, for rarefaction and extrapolation of species diversity (Hill numbers). It’s a useful package to use if you want to make any predictions about sampling size or diversity. 
+
+### Hill numbers
+
+Hill numbers are a set of diversity indices used in ecology and biodiversity assessments to quantify the richness and evenness of species in a given community. These indices were developed by Michael Hill and are widely used to summarize various aspects of biodiversity. Hill numbers are particularly useful because they provide a way to focus on different facets of diversity, depending on the specific questions or goals of a study. For a thorough introduction to Hill numbers check out: Alberdi & Gilbert, A guide to the application of Hill numbers to DNA-based diversity analyses. Molecular Ecology 2019
+
+There are several Hill numbers, but they all share a common formula that relies on an exponent, denoted as "q." The choice of the exponent determines which aspect of diversity is emphasized:
+
+- Richness (q = 0): Hill number with q = 0 is also known as the "species richness" or "taxonomic distinctness" index. It simply counts the number of unique species in a community without considering their abundances. This index is valuable when you want to emphasize the presence or absence of species but not their relative abundance.
+
+- Exponential Shannon entropy (q = 1): This index corresponds to the Shannon-Wiener diversity index (commonly referred to as Shannon entropy) when q is set to 1. It considers both the richness and the evenness of species abundances. It is often used when you want to give equal importance to species richness and evenness.
+
+- Inverse Simpson index (q = 2): The Inverse Simpson index corresponds to the Simpson diversity index when q is set to 2. This index emphasizes the dominance of the most abundant species in a community. It is often used when you want to give more weight to the presence of dominant species.
+
+- Higher Hill numbers (q > 2): These Hill numbers give increasing weight to the most abundant species, placing more emphasis on the dominant species in the community. The larger the value of q, the more sensitive the index becomes to the presence of dominant species.
+
+Hill numbers offer a flexible framework for assessing biodiversity because they allow you to choose the appropriate value of q based on the specific ecological question or management objective you are addressing. For example:
+
+- If you want to measure the overall diversity of a community while considering both species richness and evenness, you might use q = 1.
+
+- If you are concerned about the impact of a few highly dominant species in an ecosystem, you might use q = 2 or a higher value to focus on those dominant species.
+
+#iNEXT package
+iNEXT is a neat package that can calculate Hill numbers, enabling us to investigate alpha diversity accumulation curves (similar to species accumulation curves). These graphs can help us determine if sufficient sampling was conducted at each site, based on the plateauing of the curves, similar to the rarefaction curves. But iNEXT.3D goes beyond rarefraction and extrapolates alpha diversity numbers beyond the number of samples collected (default is double sample number). 
+
+### Running iNEXT
+
+
+```{r}
+library(iNEXT.3D)
+#inext 3d takes a really weird input
+
+#generate a list of the unique sample locations
+categories <- unique(sample_data(Fish.eDNA.pa)$Location)
+#create empty list
+split_physeq_list <- list()
+#fill empty list with a presence absence OTU from each location
+for (category in categories) {
+  sub_physeq.100 <- subset_samples(Fish.eDNA.pa, Location == category)
+  split_physeq_list[[category]] <- otu_table(sub_physeq.100)
+}  
+
+#make the lists a matrix of lists 
+matrix_list <- lapply(split_physeq_list, function(x) {
+  otu_table <- as(x, "matrix")
+  return(otu_table)
+})
+
+# Create a list named "data" to store matrices
+matrix_list <- list(data = list())
+
+# Convert each split phyloseq object into a matrix and store it under "data"
+for (category in categories) {
+  otu_table <- as(otu_table(split_physeq_list[[category]]), "matrix")
+  matrix_list[["data"]][[category]] <- otu_table
+}
+
+#lets have a look at it:
+#matrix_list$data
+#I told you it was a weird format!
+#now we can run iNEXT3D!
+
+#we have our data set up as incidence raw, there is several types you can input (they are all weird)
+#https://github.com/KaiHsiangHu/iNEXT.3D
+#we are going to calculate the taxonomic diversity, across all three hill numbers, using the default bootstrapping (50) and default endpoint for the extrapolation (double the input sample number)
+out.raw <- iNEXT3D(data = matrix_list$data, diversity = 'TD', q = c(0, 1, 2), datatype = 'incidence_raw', nboot = 50)
+
+#there is various ways to look at these plots:
+#within a sample
+ggiNEXT3D(out.raw, type = 1, facet.var = 'Assemblage') + facet_wrap(~Assemblage, nrow = 3)
+#across samples
+ggiNEXT3D(out.raw, type = 1, facet.var = "Order.q")
+#sample completeness
+ggiNEXT3D(out.raw, type = 2, facet.var = "Order.q", color.var = "Assemblage")
+
+
+```
+
+# Beta Diversity (Species composition)
+
+## Ordination
+Ordination is a multivariate analysis which aims to find gradients or changes in species composition across groups. Multivariate species composition can be imagined as samples in multidimensional space, where every species represents its own axis. Because multidimensional space is not easy to display, describe, or even imagine, it is worth reducing it into a few main dimensions while preserving the maximum information. In ordination space, objects that are closer together are more similar, and dissimilar objects are farther. 
+
+The choice of ordination methods depends on 1) the type of data you have, 2) the similarity distance matrix you want/can use, and 3) what you want to say. Different ordination methods use different similarity matrices, and can significantly affect the results. For example, Principle Components Analysis (PCA) will use only Euclidean distance, while Non-metric Multidimensional Scaling (nMDS) or Principle Coordinates Analysis (PCoA) use any similarity distance matrix you want. 
+
+So, how to choose a method?
+
+- If you have a data set that includes null values (e.g., metabarcoding data sets will often include null values, when for example an OTU is present in some samples and not in others), you would use a Bray-Curtis similarity matrix (as it can handle a lot of nulls in the data set) or a Jaccard similarity matrix (for presence-absence data) and you could use ordinations that can work with these types of similarity distance matrices. 
+- if you have a data set that does not include null values (e.g., environmental variables), you can use Euclidean distance, and use a PCA, nMDS, or another ordination that supports Euclidean distances. 
+
+Many other ordination methods exist including RDA (Redundancy Analysis), CAP (Canonical Analysis of Principle coordinates), dbRDA (Distance Cased Redundancy Analysis) (and many more). Some methods will be better than others to show complex community or a specific effect of a factor on your data. For example, CAP will be good to show the effect of the interaction between factors on your community. So sometimes, it is good to try different methods if you are not happy about the results, but keep in mind that these methods are “only” ordination, and you need to perform test for significant differences between groups (e.g. ANOSIM, PERMANOVA). 
+
+Often different ordination methods will have different features/characteristics than you will find interesting, such overlay vectors or extra variables, % explained by each axis, 3D plots etc.  However, all these details are more software related than truly related to the ordination methods.
+
+For more information about different types of ordination analysis, see this blog: https://www.davidzeleny.net/anadat-r/doku.php/en:ordination or this review article: https://onlinelibrary.wiley.com/doi/full/10.1111/mec.13536
+
+So, now for some examples.
+
+### NMDS
+
+NMDS is a technique that attempts to represent the pairwise dissimilarities or distances between samples in a lower-dimensional space. The goal is to position the samples in such a way that their relative distances in the ordination plot reflect the original dissimilarity structure as closely as possible 
+
+NMDS is a non-metric technique, meaning that it does not assume a linear relationship between the original distances and the distances in the ordination space. It focuses on preserving the ranking or order of dissimilarities rather than their precise values.
+
+
+
+```{r}
+#NMDS Plot
+
+
+OTU_Dist <- vegdist(Fish.pa_OTU_df, method="jaccard") #create distance matrix
+
+ord <- metaMDS(OTU_Dist,
+          distance = "jaccard", #dissimilarity method
+          k = 2, #number of dimensions
+          maxit = 999, #max number of iterations 
+          trymax = 500, #max number of random starts - may need to play around with this if you have many zeros in your dataset
+          wascores = TRUE) #is a method of calculating species scores, default is TRUE
+
+ord$stress #stress value
+
+
+plot(ord)
+
+```
+
+When you run the above code you will get a full result of your NMDS. The NMDS will run to a minimized stress value.
+
+It is common for NMDS analyses to start by running with 2-dimensions (k), but you want to increase the number of dimensions to ensure a minimized stress value. Keep in mind that anything more than 5-dimensions makes it difficult to interpret a 2-dimensional plot.
+
+As a rule of thumb literature has identified the following cut-off values for stress-level:
+
+  Higher than 0.2 is poor (risks for false interpretation).
+  0.1 - 0.2 is fair (some distances can be misleading for interpretation).
+  0.05 - 0.1 is good (can be confident in inferences from plot).
+  Less than 0.05 is excellent (this can be rare).
+
+
+One other way to check how well the ordination plots represent real data is by using the goodness function. You can produce goodness of fit statistics for each observation (points). You can also use the function `stressplot` to create a Shepard diagram displaying two correlation-like statistics for goodness of fit between ordination distances and observed dissimilarity. This shows how closely our ordination fits real world plot dissimilarities and how well we can interpret the ordination.
+
+```{r}
+# Shepards test/goodness of fit
+goodness(ord) # Produces a results of test statistics for goodness of fit for each point
+
+stressplot(ord) # Produces a Shepards diagram
+
+```
+
+The Shepard plot identifies a strong correlation between observed dissimilarity and ordination distance (R2 = 0.828), highlighting a pretty good goodness-of-fit of the NMDS (remember, we want this as close to 1 as possible).
+
+Now lets make a plot that looks nice on ggplot
+
+```{r}
+both.scores = cbind(scores(ord), Fish_Sample_df) 
+
+ggplot(both.scores) +
+  geom_point( aes(x=NMDS1,y=NMDS2, colour = Location),size=2) +
+  stat_ellipse(aes(x=NMDS1, y=NMDS2, colour= Location))+ 
+  coord_equal() +
+  ggtitle("NMDS") +
+  theme_classic() 
+
+
+```
+
+
+You can also do this on `phyloseq`
+
+```{r}
+
+
+FisheDNA.ord <- ordinate(Fish.eDNA.pa, "NMDS", "jaccard") 
+FisheDNA.ord
+
+#
+
+NMDSphylo = plot_ordination(Fish.eDNA.pa, FisheDNA.ord, type="samples", color="Location")
+NMDSphylo + stat_ellipse(aes(x=NMDS1, y=NMDS2, colour= Location))+
+  geom_point(size=2) +  coord_equal() +
+  ggtitle("NMDS phyloseq") +
+  theme_classic() 
+
+```
+
+Looks like the open water samples are doing something different here than they were in the Presence-absence data. May be worth checking comparing them. 
+
+### PCoA
+Principal coordinates analysis (PCoA) is also known as classical or metric MDS (Multidimensional Scaling). It aims to preserve the original pairwise distances as closely as possible while transforming the data into a lower-dimensional space. PCoA is a metric technique, which assumes a linear relationship between the original distances and the distances in the ordination space. It aims to maintain the actual distances as much as possible.
+
+If the distance measure is Euclidean, PCoA is identical to PCA (principal components analysis)
+
+
+```{r}
+#PCoA
+
+ordination_mds <- wcmdscale(OTU_Dist, eig = TRUE)
+
+pcoa_df <- data.frame(ordination_mds$points)
+colnames(pcoa_df) <- c("PCo1", "PCo2")
+pcoa_df$Location <- factor(Fish_Sample_df$Location) #add group of interest, mine was Location data
+percent_explained <- 100 * ordination_mds$eig /sum(ordination_mds$eig)
+pretty_pe <- round(percent_explained[1:2], digits = 1)
+pretty_pe
+labs <- c(glue("PCo1 ({pretty_pe[1]}%)"),
+          glue("PCo2 ({pretty_pe[2]}%)"))
+
+
+ggplot(pcoa_df, aes(x = PCo1, y = PCo2, color = Location)) + 
+  geom_point(size = 2) +
+  stat_ellipse(aes(x = PCo1, y = PCo2, color = Location)) +
+  ggtitle("PCOA") +
+  theme_classic() +
+  labs(x=labs[1], y=labs[2])
+
+
+
+ordination_eigen <- ordination_mds$eig
+ordination_eigenvalue <- ordination_eigen/sum(ordination_eigen) 
+ordination_eigen_frame <- data.frame(Inertia = ordination_eigenvalue*100, Axes = c(1:57)) #here we can see the axes we will be using and the eigen values
+head(ordination_eigen_frame)
+eigenplot <- ggplot(data = ordination_eigen_frame, aes(x = factor(Axes), y = Inertia)) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(expand = c(0,0), limits = c(0, 50)) +
+  theme_classic() +
+  xlab("Axes") +
+  ylab("Inertia %") +
+  theme(axis.ticks.x = element_blank(), axis.text.x = element_blank())
+
+eigenplot
+
+ordination_mds$GOF #goodness of fit
+
+
+```
+
+In PCoA, the eigenvalues represent the amount of variance explained by each axis (dimension) in the ordination plot. The first eigenvalue explains the most variance, the second eigenvalue explains the second most, and so on. The larger the eigenvalue, the more important that axis is in capturing the variability in the original data. So when displaying a plot in 2 dimensions, its important to look at how much of the variation in your data is explained in those two dimensions (Eigenvalue 1 and Eigenvalue 2).
+
+In our example data:
+Axes 1 = 16.02%
+Axes 2 = 11.63%
+
+Total = 27.65% of the variation explained in the PCoA plot
+
+Goodness of Fit is also worth looking at  - you want to maximise these values. 
+
+
+You can also do this in `phyloseq`
+
+```{r}
+
+FisheDNA.PCoA = ordinate(Fish.eDNA.pa, "PCoA", "jaccard", weighted=TRUE)
+
+PCoAphylo = plot_ordination(Fish.eDNA.pa, FisheDNA.PCoA, type="samples", color="Location")
+
+PCoAphylo + stat_ellipse(aes(x=Axis.1, y=Axis.2, colour= Location))+
+  geom_point(size=2) +  coord_equal() +
+  ggtitle("PCoA phyloseq") +
+  theme_classic() 
+
+```
+
+
+
+## Fit Environmental vectors
+
+We can also fit some environmental vectors to our plots using the `envfit` function. In the interest of time I will be showing this on the PCoA plot, but you can also use the ordination from the NMDS and see what it generates. 
+
+Note, it is not advisable to run this on constrained analysis, as you would be looking at overinflated correlations. Works well with NMDS or the PCoA we are using today. 
+
+We will be looking at a four Vectors (number only values):
+- Temperature (Temperature)
+- Dissolved oxygen (Diss.O)
+- Latitude (Lat)
+- Longitude (Long)
+
+And 1 Factor:
+- Habitat type (Location) 
+
+
+```{r}
+
+meta_env <- read.csv('FTP142SampleEnvVariables.csv', check.names = FALSE, row.names = 1) #has the sample numbers removed - makes interpretation easier....
+
+en = envfit(ordination_mds, meta_env, permutations = 999, na.rm = TRUE)
+en
+
+{ordiplot(ordination_mds, display = 'sites')
+  plot(en, p.max = 0.05, col = "red")}
+
+```
+
+
+It looks like the habitat type and the latitude and longitude is the biggest driver in community composition of the fish (significant correlations with the ordination scores) - which makes sense when we think about the fish ecology within the region. Note that because latitude and longitude are vectors, we are getting a correlation added onto the plot. 
+
+Could we show this data in a non-linear way?
+
+
+
+```{r}
+
+ordisurf(ordination_mds, meta_env[, 'Lat'], main = 'Latitude', display = 'sites' ) 
+
+```
+
+
+
+## PERMANOVA
+Now we will test whether the patterns we observed in the nMDS or the PCoA plot are actually statistically significant.
+
+PERmutational Multivariate ANalysis of VAriance (PERMANOVA) is a permutation-based technique – it makes no distributional assumptions about multivariate normality or homogeneity of variances. This means it is the non-parametric equivalent of Multivariate Analysis of Variance (MANOVA). The main goal of PERMANOVA is to determine whether there are statistically significant differences between the groups based on the multivariate data, while accounting for the inherent variability within each group. 
+
+The PERMANOVA procedure works by using permutation testing. Here's a basic outline of how it works:
+
+1. Data Setup: You have a dataset with multiple variables (multivariate) and multiple groups or conditions.
+
+2. Dissimilarity Matrix: A dissimilarity matrix is created based on the multivariate data. This matrix quantifies the dissimilarity or distance between individual observations within the dataset (here you could pick what matrix you would like to use, in our example we are using a Jaccard matrix as we are using Presence-Absence data).
+
+3. Permutation Testing: PERMANOVA works by shuffling the group labels (permuting) and then recalculating the dissimilarity matrix and relevant statistical tests. This process is repeated many times to create a distribution of test statistics under the assumption that the group labels have no effect on the data.
+
+4. Comparison to Observed Data: The observed test statistic (usually a sum of squares or sums of squared distances) is then compared to the distribution of test statistics generated through permutation testing. This comparison helps determine the likelihood of observing the observed test statistic if the group labels have no effect.
+
+5. P-Value Calculation: The p-value is calculated as the proportion of permuted test statistics that are more extreme than the observed test statistic. A low p-value indicates that the observed differences between groups are unlikely to occur by random chance alone.
+
+6. Interpretation: If the p-value is below a pre-defined significance level (e.g., 0.05), you can then conclude that there are statistically significant differences between the groups based on the multivariate data.
+
+
+```{r}
+
+#PERMANOVA
+
+adonis2(OTU_Dist ~ Location, method = "jaccard", data = Fish_Sample_df, permutations = 9999)
+
+
+```
+
+
+You would need to report the df, F value, P value (Pr(>F)) in the manuscript.
+
+
+## Indicator species
+Determining the occurrence or abundance of a small set of indicator species, as an alternative to sampling the entire community, has been particularly useful in longterm environmental monitoring for conservation or ecological management. Species are chosen as indicators if they:
+
+- Reflect the biotic or abiotic state of the environment;
+- Provide evidence for the impacts of environmental change; or
+- Predict the diversity of other species, taxa or communities within an area.
+
+Our previous analysis has shown us that there are differences between the groups, and I would like to look at indicator species as potentially what species could be responsible for those differences between the groups. We will be using the `indicspecies` package to look at the indicator species for each location type. 
+
+Indicator species are often determined using an analysis of the relationship between the species occurrence or abundance values from a set of sampled sites and the classification of the same sites into site groups, which may represent habitat types, community types, disturbance states, etc. Thus, there are two data elements in an indicator species analysis: (1) the community data matrix; and (2) the vector that describes the classification of sites into groups.
+
+Important to note for this package to work you need **sites in rows** and **species in columns**.
+
+
+```{r}
+
+
+indval <- multipatt(Fish.pa_OTU_df, Fish_Sample_df$Location, 
+                    control = how(nperm=999)) 
+
+summary(indval)
+
+tax_table(Fish.eDNA.pa)
+```
+
+Showing all significant (a<0.05) taxa that are responsible for characterising different habitat types. 
+
+**What do these results mean?**
+
+Looks like there are a few taxa that are strongly associated with Open water. For example, zotu 5, was identified as some species of triple fin (*Forsterygion*), is found in 61.1% (stat = 0.611) of all the site in the Mudflats location type.
+
+Out of 999 permutations, this taxa was a significant taxa in indicating a Mudflats location. 
+
+# Plotting maps
+Most eDNA papers will include a map of the datapoints. It relatively straight forward to plot these in R and there is various options for this including leaflet, plotly and ggplot. We are going to use leaflet today, though I have also included some code for plotly which is a bit more flexible for design etc but with that flexibility comes complexity.
+More details of leaflet maps can be found here:
+https://rstudio.github.io/leaflet/
+
+```{r}
+#leaflet
+##packages
+library(leaflet)
+library(htmltools)
+library(tidyverse)
+library(RColorBrewer)
+
+#load the metadata file
+#this must include the longitude and latitude data + whatever data you wish to display
+
+meta_data_map<-read.table(file='Meta_data_maps.csv',header=T,sep=',', stringsAsFactors = F)
+meta_data_map
+
+#here is basic map using leaflet 
+#most maps in R work in a layering manner so its easier to think of it as adding a layer on to a map
+#the icons are clickable
+#here I am loading the data and map then adding makers at each long/lat that have a pop up of the sample ID, sample name and replication per site
+
+leaflet(meta_data_map) %>% addTiles() %>%
+  addMarkers(~Longitude, ~Latitude, popup = ~paste(Sample_ID, Sample_name, paste('N reps:', Replication_per_site,sep =' '), sep = "<br>"))
+
+#we can make it a bit prettier by colouring things by sample type
+#set your colour palets to have the same number of colours as you have samples (Im using Rcolourbrewer package here to make this easeir)
+pal <- colorFactor(
+  palette = 'Dark2',
+  domain = meta_data_map$Sample_type
+)
+
+#nicer map: we are adding in a legend, changing the markers and adding some permanent label texts so it can be exported as a figure.
+
+leaflet(meta_data_map) %>% 
+  addTiles() %>%
+  addCircleMarkers(~Longitude, ~Latitude,
+                   popup = ~paste(Sample_name, paste('# reps:', Replication_per_site,sep =' '), sep = "<br>"),
+                   label = ~ as.character(Sample_type),
+                   color = ~ pal(Sample_type),
+                   radius = ~ sqrt(Replication_per_site)+4, 
+                   stroke = FALSE, fillOpacity = 1) %>% 
+  addLegend("bottomright", pal = pal, values = ~Sample_type,
+            title = "Sample type",
+            opacity = 1) %>% 
+  addLabelOnlyMarkers(~Longitude, ~Latitude,
+                      label = ~ as.character(Sample_ID),labelOptions = labelOptions(noHide = T, direction = 'top', textOnly = T))
+
+#unfortunately in my 2 minute google I could not find a way to implement a version of ggrepel in leaflet so the labels overlap - this is probably possible in ggplot
+
+```
+
+## maps in plotly
+Im also going to include some code here for plotly which is a nice package for figures - conveniently there is a python and R version of plotly though you will obviously have to change the code for python. Maps in plotly work by you getting an account with mapbox and generating a authenticator key (this is free):
+https://docs.mapbox.com/help/getting-started/access-tokens/
+More details on plotly maps can be found here: https://plotly.com/r/maps/
+Below is some code to make a map this way, it is more flexible than leaflet but also a bit more tricky. 
+
+```{r}
+##plotly maps:
+#Sys.setenv('MAPBOX_TOKEN' ='xxxyourkeyxxx')
+
+##like leaflet these figures are layered on top
+#map<-plot_mapbox(meta_data_map) %>%
+#  add_markers(
+#    x = ~Longitude, 
+#    y = ~Latitude, 
+#    size = ~Replication_per_site, 
+#    color = ~Sample_type,
+#    colors = "Accent",
+#    text = ~paste(Sample_ID, Sample_name),
+#    hoverinfo = "text"
+#  )
+##plotly defaults to Cameroon so you will have to go find NZ
+#map 
+
+##add in a legend
+#map<-map %>% layout(title = 'Sampling locations',
+#                    legend = list(orientation = 'h',
+#                                  font = list(size = 8)),
+#                    margin = list(l = 25, r = 25,
+#                                  b = 25, t = 25,
+#                                  pad = 2)) 
+#map
+
+##or we could turn it dark
+#map<-map %>% layout(title = 'Sampling locations',
+#                      font = list(color='white'),
+#                      plot_bgcolor = '#191A1A', paper_bgcolor = '#191A1A',
+#                      mapbox = list(style = 'dark'),
+#                      legend = list(orientation = 'h',
+#                                    font = list(size = 8)),
+#                      margin = list(l = 25, r = 25,
+#                                    b = 25, t = 25,
+#                                    pad = 2)) 
+#map
+```
+
+
+
+
+
+
+
