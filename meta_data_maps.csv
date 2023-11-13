@@ -1,0 +1,13 @@
+Sample_ID,Replication_per_site,Sample_name,Sample_type,Latitude,Longitude
+SB 1,5,Sandy beach 1,Sandy beach,-45.771141,170.700899
+SB 2,5,Sandy beach 2,Sandy beach,-45.773656,170.704852
+SB 3,5,Sandy beach 3,Sandy beach,-45.781894,170.712582
+SB 4,5,Sandy beach 4,Sandy beach,-45.783417,170.717423
+RS 1,5,Rocky shore 1,Rocky shore,-45.773568,170.715362
+RS 2,5,Rocky shore 2,Rocky shore,-45.77068,170.719641
+RS 3,5,Rocky shore 3,Rocky shore,-45.776183,170.711853
+MF 1,5,Mudflats 1,Mudflats,-45.783038,170.713116
+MF 2,5,Mudflats 2,Mudflats,-45.782339,170.711368
+MF 3,5,Mudflats 3,Mudflats,-45.782911,170.710703
+OW 1,5,Openwater 1,Openwater,-45.775401,170.775829
+OW 2,5,Openwater 2,Openwater,-45.772766,170.817028
